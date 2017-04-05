@@ -138,11 +138,11 @@ class OpsManager
               when '503' ; sleep(60)
             end
           rescue CF::UAA::BadResponse
-            puts "Caught a BadResponse error.  Handling it"
+            puts "Caught a BadResponse error.  Sleeping 60 seconds."
             sleep(60)
             next
           rescue
-            puts "Caught an unidentified error.  Handling it"
+            puts "Caught an unidentified error.  Sleeping 60 seconds."
             sleep(60)
             next
           end
