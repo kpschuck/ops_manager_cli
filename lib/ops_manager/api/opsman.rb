@@ -176,13 +176,13 @@ class OpsManager
 
       private
       def token_issuer
-        @token_issuer = CF::UAA::TokenIssuer.new(
+        @token_issuer ||= CF::UAA::TokenIssuer.new(
           "https://#{target}/uaa", 'opsman', nil, skip_ssl_validation: true )
       end
 
       def access_token
         token = get_token
-        @access_token ||= token ? token.info['access_token'] : nil
+        @access_token = token ? token.info['access_token'] : nil
       end
 
       def authorization_header
