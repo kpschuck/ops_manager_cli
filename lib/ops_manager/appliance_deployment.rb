@@ -24,7 +24,9 @@ class OpsManager::ApplianceDeployment
     OpsManager.set_conf(:pivnet_token, config.pivnet_token)
 
     self.extend(OpsManager::Deployments::Vsphere)
-
+      if config.has_key?('hostname') then
+        OpsManager.set_conf(:target, config.hostname)
+      end
     case
     when current_version.empty?
       puts "No OpsManager deployed at #{config.ip}. Deploying ...".green
@@ -112,7 +114,7 @@ class OpsManager::ApplianceDeployment
   def download_current_stemcells
     puts "Downloading existing stemcells ...".green
     FileUtils.mkdir_p current_stemcell_dir
-    list_current_stemcells.each do |stemcell_version|
+    list_current_stemcells.uniq.each do |stemcell_version|
       release_id = find_stemcell_release(stemcell_version)
       accept_product_release_eula('stemcells', release_id )
       file_id, file_name = find_stemcell_file(release_id, /vsphere/)
