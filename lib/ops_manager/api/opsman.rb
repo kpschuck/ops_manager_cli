@@ -129,10 +129,22 @@ class OpsManager
         res = nil
 
         3.times do
-          res = authenticated_multipart_post("/api/v0/stemcells", opts)
-          case res.code
-            when '200' ; break
-            when '503' ; sleep(60)
+          begin
+            res = authenticated_multipart_post("/api/v0/stemcells", opts)
+            puts "Response code was: #{res.code}"
+            case res.code
+              when '200' ; break
+              when '502' ; sleep(60)
+              when '503' ; sleep(60)
+            end
+          rescue CF::UAA::BadResponse
+            puts "Caught a BadResponse error.  Handling it"
+            sleep(60)
+            next
+          rescue
+            puts "Caught an unidentified error.  Handling it"
+            sleep(60)
+            next
           end
         end
 
@@ -164,7 +176,7 @@ class OpsManager
 
       private
       def token_issuer
-        @token_issuer ||= CF::UAA::TokenIssuer.new(
+        @token_issuer = CF::UAA::TokenIssuer.new(
           "https://#{target}/uaa", 'opsman', nil, skip_ssl_validation: true )
       end
 
