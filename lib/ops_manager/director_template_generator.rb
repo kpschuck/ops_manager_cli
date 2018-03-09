@@ -7,9 +7,8 @@ class OpsManager
       installation_settings.delete(property_name)
     end
 
-    %w{ director_ssl uaa_ssl uaa_credentials uaa_admin_user_credentials
-      uaa_admin_client_credentials }.each do |property_name|
-      product_template["products"][1].delete(property_name)
+    %w{ uaa_credentials uaa_admin_user_credentials uaa_admin_client_credentials }.each do |property_name|
+      product_template["products"].select {|p| p["identifier"] == "p-bosh"}.first.delete(property_name)
     end
 
       add_merging_strategy_for_networks

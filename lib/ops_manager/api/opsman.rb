@@ -25,6 +25,10 @@ class OpsManager
         authenticated_get("/api/v0/staged/products", opts)
       end
 
+      def get_pending_changes(opts = {})
+        authenticated_get("/api/v0/staged/pending_changes", opts)
+      end
+
       def get_installation_settings(opts = {})
         print_green '====> Downloading installation settings ...'
         res = authenticated_get("/api/installation_settings", opts)
@@ -43,7 +47,7 @@ class OpsManager
 
       def get_installation_assets
         opts = { write_to: "installation_assets.zip" }
-        say_green '====> Download installation assets ...'
+        print_green '====> Download installation assets ...'
         res = authenticated_get("/api/v0/installation_asset_collection", opts)
         say_green 'done'
         res
@@ -103,12 +107,16 @@ class OpsManager
       end
 
       def upload_product(filepath)
-        file = "#{filepath}"
-        cmd = "curl -s -k \"https://#{target}/api/v0/available_products\" -F 'product[file]=@#{file}' -X POST -H 'Authorization: Bearer #{access_token}'"
-        logger.info "running cmd: #{cmd}"
-        body = `#{cmd}`
-        logger.info "Upload product response: #{body}"
-        raise OpsManager::ProductUploadError if body.include? "error"
+        return unless filepath
+        tar = UploadIO.new(filepath, 'multipart/form-data')
+        print_green "====> Uploading product: #{filepath} ..."
+      #print "====> Uploading product ...".green
+        opts = { "product[file]" => tar }
+        res = authenticated_multipart_post("/api/v0/available_products" , opts)
+
+        raise OpsManager::ProductUploadError.new(res.body) unless res.code == '200'
+        say_green 'done'
+        res
       end
 
       def get_available_products
@@ -117,7 +125,7 @@ class OpsManager
 
       def get_diagnostic_report
         authenticated_get("/api/v0/diagnostic_report")
-      rescue Errno::ETIMEDOUT , Errno::EHOSTUNREACH, Net::HTTPFatalError, Net::OpenTimeout, CF::UAA::BadTarget, SocketError
+      rescue Errno::ETIMEDOUT , Errno::EHOSTUNREACH, Net::HTTPFatalError, Net::OpenTimeout, HTTPClient::ConnectTimeoutError, CF::UAA::BadTarget, SocketError
         nil
       end
 
@@ -153,6 +161,35 @@ class OpsManager
         res
       end
 
+      def get_ensure_availability
+        get("/login/ensure_availability")
+      end
+
+      def get_token
+        token_issuer.owner_password_grant(username, password, 'opsman.admin').tap do |token|
+          logger.info "UAA Token: #{token.inspect}"
+        end
+      rescue  CF::UAA::TargetError
+        nil
+      end
+
+      def pending_changes(opts = {})
+        print_green '====> Getting pending changes ...'
+        res = authenticated_get('/api/v0/staged/pending_changes')
+        pendingChanges = JSON.parse(res.body)
+
+        if pendingChanges['product_changes'].count == 0
+          puts "\nNo pending changes"
+        else
+          pendingChanges['product_changes'].each do |product|
+            puts "\n#{product['guid']}"
+          end
+        end
+
+        say_green 'done'
+        res
+      end
+
       def username
         @username ||= OpsManager.get_conf(:username)
       end
@@ -165,24 +202,34 @@ class OpsManager
         @target = OpsManager.get_conf(:target)
       end
 
-      def get_token
-        token_issuer.owner_password_grant(username, password, 'opsman.admin').tap do |token|
-          logger.info "UAA Token: #{token.inspect}"
-        end
-      rescue  CF::UAA::TargetError, CF::UAA::BadTarget
-        nil
-      end
-
-
-      private
-      def token_issuer
-        @token_issuer ||= CF::UAA::TokenIssuer.new(
-          "https://#{target}/uaa", 'opsman', nil, skip_ssl_validation: true )
+      def reset_access_token
+        @access_token = nil
       end
 
       def access_token
-        token = get_token
-        @access_token = token ? token.info['access_token'] : nil
+        @access_token ||= get_token.info['access_token']
+      end
+
+      def wait_for_https_alive(limit)
+        @retry_counter = 0
+        res = nil
+        until(@retry_counter >= limit or (res = check_alive).code.to_i < 400) do
+          sleep 1
+          @retry_counter += 1
+        end
+        res
+      end
+
+      private
+      def check_alive
+        get("/")
+      rescue Net::OpenTimeout, Net::HTTPError, Net::HTTPFatalError, Errno::ETIMEDOUT, Errno::ECONNREFUSED, Errno::ECONNRESET => e
+        Net::HTTPInternalServerError.new(1.0, 500, e.inspect)
+      end
+
+      def token_issuer
+        @token_issuer ||= CF::UAA::TokenIssuer.new(
+          "https://#{target}/uaa", 'opsman', nil, skip_ssl_validation: true )
       end
 
       def authorization_header

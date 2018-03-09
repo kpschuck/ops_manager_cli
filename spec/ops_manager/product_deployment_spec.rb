@@ -8,7 +8,7 @@ describe OpsManager::ProductDeployment do
   let(:target){'1.2.3.4'}
   let(:username){ 'foo' }
   let(:password){ 'bar' }
-  let(:filepath) { 'example-product-1.6.1.pivotal' }
+  let(:filepath) { 'tile.pivotal' }
   let(:guid) { 'example-product-abc123' }
   let(:installation_settings_file){ '../fixtures/installation_settings.json' }
   let(:desired_version){ '1.6.2.0' }
@@ -18,17 +18,18 @@ describe OpsManager::ProductDeployment do
   let(:product_installation){ OpsManager::ProductInstallation.new(guid, current_version, true) }
   let(:installation){ double.as_null_object }
   let(:config) do
-    OpsManager::Configs::ProductDeployment.new(
-      'target' =>  target,
-           'username' => username,
-           'password' => password,
-           'name' => name,
-           'desired_version' => desired_version,
-           'filepath' => filepath,
-           'stemcell' => 'stemcell.tgz',
-           'installation_settings_file' => installation_settings_file
-          )
+    {
+      target: target,
+      username: username,
+      password: password,
+      name: name,
+      desired_version: desired_version,
+      filepath: filepath,
+      stemcell: 'stemcell.tgz',
+      installation_settings_file: installation_settings_file
+    }
   end
+
 
   before do
     allow(product_deployment).tap do |pd|
@@ -62,7 +63,7 @@ describe OpsManager::ProductDeployment do
     end
 
     it 'should spruce merge current installation settings with product installation settings' do
-      expect(product_deployment).to receive(:`).with("DEBUG=false spruce merge /tmp/is.yml #{installation_settings_file} > /tmp/new_is.yml")
+      expect(product_deployment).to receive(:`).with("DEBUG=false DEFAULT_ARRAY_MERGE_KEY=identifier spruce merge /tmp/is.yml #{installation_settings_file} > /tmp/new_is.yml")
       merge_product_installation_settings
     end
 
@@ -157,7 +158,8 @@ describe OpsManager::ProductDeployment do
     let(:product_installation) do
       OpsManager::ProductInstallation.new(guid, '1.6.0.0', true)
     end
-    let(:filepath) { 'example-product-1.6.2.pivotal' }
+
+    let(:filepath) { 'tile.pivotal' }
     let(:product_exists?){ true }
     before do
       allow(product_installation).to receive(:prepared?)

@@ -1,15 +1,18 @@
 require "ops_manager/api/opsman"
 require "ops_manager/api/pivnet"
-require 'ops_manager/configs/opsman_deployment'
+require 'ops_manager/config/opsman_deployment'
 require 'fileutils'
 
 class OpsManager::ApplianceDeployment
   extend Forwardable
+  attr_reader :config
+
   def_delegators :pivnet_api, :get_product_releases, :accept_product_release_eula,
     :get_product_release_files, :download_product_release_file
-  def_delegators :opsman_api, :create_user, :trigger_installation, :get_installation_assets,
-    :get_installation_settings, :get_diagnostic_report, :upload_installation_assets,
-    :import_stemcell, :target, :password, :username, :ops_manager_version=
+  def_delegators :opsman_api, :create_user, :get_installation_assets,
+    :get_installation_settings, :get_diagnostic_report, :upload_installation_assets, :get_ensure_availability,
+    :import_stemcell, :target, :password, :username, :ops_manager_version= , :reset_access_token, :get_pending_changes,
+    :wait_for_https_alive
 
   attr_reader :config_file
 
@@ -18,40 +21,45 @@ class OpsManager::ApplianceDeployment
   end
 
   def run
-    OpsManager.set_conf(:target, config.ip)
-    OpsManager.set_conf(:username, config.username)
-    OpsManager.set_conf(:password, config.password)
-    OpsManager.set_conf(:pivnet_token, config.pivnet_token)
+    OpsManager.set_conf(:target, config[:ip])
+    OpsManager.set_conf(:username, config[:username])
+    OpsManager.set_conf(:password, config[:password])
+    OpsManager.set_conf(:pivnet_token, config[:pivnet_token])
 
     self.extend(OpsManager::Deployments::Vsphere)
-      if config.has_key?('hostname') then
-        OpsManager.set_conf(:target, config.hostname)
-      end
+
+    if config.has_key?('hostname') then
+      OpsManager.set_conf(:target, config.hostname)
+    end
+
     case
     when current_version.empty?
-      puts "No OpsManager deployed at #{config.ip}. Deploying ...".green
+      puts "No OpsManager deployed at #{config[:ip]}. Deploying ...".green
       deploy
       if config.has_key?('hostname') then
         OpsManager.set_conf(:target, config.hostname)
       end
       create_first_user
     when current_version < desired_version then
-      puts "OpsManager at #{config.ip} version is #{current_version}. Upgrading to #{desired_version} .../".green
+      puts "OpsManager at #{config[:ip]} version is #{current_version}. Upgrading to #{desired_version} .../".green
       upgrade
     when current_version == desired_version then
-      puts "OpsManager at #{config.ip} version is already #{config.desired_version}. Skiping ...".green
+      if pending_changes?
+        puts "OpsManager at #{config[:ip]} version has pending changes. Applying changes...".green
+        OpsManager::InstallationRunner.trigger!.wait_for_result
+      else
+        puts "OpsManager at #{config[:ip]} version is already #{config[:desired_version]}. Skiping ...".green
+      end
     end
 
     puts '====> Finish!'.green
   end
 
-  def deploy
-    deploy_vm(desired_vm_name , config.ip)
-  end
-
-  %w{ stop_current_vm deploy_vm }.each do |m|
-    define_method(m) do
-      raise NotImplementedError
+  def appliance
+    @appliance ||= if config[:provider] =~/vsphere/i
+      OpsManager::Appliance::Vsphere.new(config)
+    else
+      OpsManager::Appliance::AWS.new(config)
     end
   end
 
@@ -62,20 +70,30 @@ class OpsManager::ApplianceDeployment
     end
   end
 
+  def deploy
+    appliance.deploy_vm
+    wait_for_https_alive 300
+  end
+
   def upgrade
     get_installation_assets
     download_current_stemcells
-    stop_current_vm(current_vm_name)
+    appliance.stop_current_vm(current_name)
     deploy
     upload_installation_assets
+    wait_for_uaa
     provision_stemcells
     OpsManager::InstallationRunner.trigger!.wait_for_result
   end
 
   def list_current_stemcells
     JSON.parse(installation_settings).fetch('products').inject([]) do |a, p|
-      a << p['stemcell'].fetch('version')
-    end
+      product_name = "stemcells"
+      if p['stemcell'].fetch('os') =~ /windows/i
+        product_name = "stemcells-windows-server"
+      end
+      a << { version: p['stemcell'].fetch('version'), product: product_name }
+    end.uniq
   end
 
   # Finds available stemcell's pivotal network release.
@@ -83,9 +101,9 @@ class OpsManager::ApplianceDeployment
   # #
   # @param version [String] the version number, eg: '2362.17'
   # @return release_id [Integer] the pivotal netowkr release id of the found stemcell.
-  def find_stemcell_release(version)
+  def find_stemcell_release(version, product_name)
     version  = OpsManager::Semver.new(version)
-    releases = stemcell_releases.collect do |r|
+    releases = stemcell_releases(product_name).collect do |r|
       {
         release_id:  r['id'],
         version:     OpsManager::Semver.new(r['version']),
@@ -103,8 +121,8 @@ class OpsManager::ApplianceDeployment
   # @param release_id [String] the version number, eg: '2362.17'
   # @param filename [Regex] the version number, eg: /vsphere/
   # @return id and name [Array] the pivotal network file ID and Filename for the matching stemcell.
-  def find_stemcell_file(release_id, filename)
-    files = JSON.parse(get_product_release_files('stemcells', release_id).body).fetch('product_files')
+  def find_stemcell_file(release_id, filename, product_name)
+    files = JSON.parse(get_product_release_files(product_name, release_id).body).fetch('product_files')
     file = files.select{ |r| r.fetch('aws_object_key') =~ filename }.first
     return file['id'], file['aws_object_key'].split('/')[-1]
   end
@@ -112,35 +130,60 @@ class OpsManager::ApplianceDeployment
   # Lists all the available stemcells in the current installation_settings.
   # Downloads those stemcells.
   def download_current_stemcells
-    puts "Downloading existing stemcells ...".green
+    print "====> Downloading existing stemcells ...".green
+    puts "no stemcells found".green if list_current_stemcells.empty?
     FileUtils.mkdir_p current_stemcell_dir
-    list_current_stemcells.uniq.each do |stemcell_version|
-      release_id = find_stemcell_release(stemcell_version)
-      accept_product_release_eula('stemcells', release_id )
-      file_id, file_name = find_stemcell_file(release_id, /vsphere/)
-      download_product_release_file('stemcells', release_id, file_id, write_to: "#{current_stemcell_dir}/#{file_name}")
+    list_current_stemcells.uniq.each do |stemcell_info|
+      stemcell_version = stemcell_info[:version]
+      product_name = stemcell_info[:product]
+      release_id = find_stemcell_release(stemcell_version, product_name)
+      accept_product_release_eula(product_name, release_id)
+      stemcell_regex = /vsphere/
+      if config[:provider] == "AWS"
+        stemcell_regex = /aws/
+      end
+
+      file_id, file_name = find_stemcell_file(release_id, stemcell_regex, product_name)
+      download_product_release_file(product_name, release_id, file_id, write_to: "#{current_stemcell_dir}/#{file_name}")
     end
   end
 
   def new_vm_name
-    @new_vm_name ||= "#{config.name}-#{config.desired_version}"
+    @new_vm_name ||= "#{config[:name]}-#{config[:desired_version]}"
   end
 
   def current_version
     @current_version ||= OpsManager::Semver.new(version_from_diagnostic_report)
   end
 
+  def current_name
+    @current_name ||= "#{config[:name]}-#{current_version}"
+  end
+
   def desired_version
-    @desired_version ||= OpsManager::Semver.new(config.desired_version)
+    @desired_version ||= OpsManager::Semver.new(config[:desired_version])
   end
 
   def provision_stemcells
+    reset_access_token
     Dir.glob("#{current_stemcell_dir}/*").each do |stemcell_filepath|
       import_stemcell(stemcell_filepath)
     end
   end
 
+  def wait_for_uaa
+    puts '====> Waiting for UAA to become available ...'.green
+    while !uaa_available?
+      sleep(5)
+    end
+  end
+
   private
+  def uaa_available?
+    res = get_ensure_availability
+    res.code.eql? '302' and res.body.include? '/auth/cloudfoundry'
+  end
+
   def diagnostic_report
     @diagnostic_report ||= get_diagnostic_report
   end
@@ -158,12 +201,9 @@ class OpsManager::ApplianceDeployment
   end
 
   def current_vm_name
-    @current_vm_name ||= "#{config.name}-#{current_version}"
+    @current_vm_name ||= "#{config[:name]}-#{current_version}"
   end
 
-  def desired_vm_name
-    @desired_vm_name ||= "#{config.name}-#{config.desired_version}"
-  end
 
   def pivnet_api
     @pivnet_api ||= OpsManager::Api::Pivnet.new
@@ -174,9 +214,9 @@ class OpsManager::ApplianceDeployment
   end
 
   def config
-    parsed_yml = ::YAML.load_file(@config_file)
-    @config ||= OpsManager::Configs::OpsmanDeployment.new(parsed_yml)
+    @config ||= OpsManager::Config::OpsmanDeployment.new(YAML.load_file(@config_file))
   end
+
 
   def desired_version?(version)
     !!(desired_version.to_s =~/#{version}/)
@@ -186,15 +226,15 @@ class OpsManager::ApplianceDeployment
     @installation_settings ||= get_installation_settings.body
   end
 
-  def get_stemcell_releases
-    get_product_releases('stemcells')
-  end
-
-  def stemcell_releases
-    @stemcell_releases ||= JSON.parse(get_stemcell_releases.body).fetch('releases')
+  def stemcell_releases(product_name)
+    JSON.parse(get_product_releases(product_name).body).fetch('releases')
   end
 
   def current_stemcell_dir
     "/tmp/current_stemcells"
+  end
+
+  def pending_changes?
+    !JSON.parse(get_pending_changes.body).fetch('product_changes').empty?
   end
 end

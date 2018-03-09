@@ -1,5 +1,39 @@
 # Change Log
 
+## [v0.7.2](https://github.com/compozed/ops_manager_cli/tree/v0.7.2) (2017-11-03)
+[Full Changelog](https://github.com/compozed/ops_manager_cli/compare/v0.7.1...v0.7.2)
+
+## [v0.7.1](https://github.com/compozed/ops_manager_cli/tree/v0.7.1) (2017-10-25)
+[Full Changelog](https://github.com/compozed/ops_manager_cli/compare/v0.7.0...v0.7.1)
+
+## [v0.7.0](https://github.com/compozed/ops_manager_cli/tree/v0.7.0) (2017-10-20)
+[Full Changelog](https://github.com/compozed/ops_manager_cli/compare/v0.5.4...v0.7.0)
+
+**Closed issues:**
+
+- OpsMAnagerCli should support new errands endpoint in versions \>= 1.10 [\#32](https://github.com/compozed/ops_manager_cli/issues/32)
+
+**Merged pull requests:**
+
+- Added support for ops\_manager\_cli to deploy via AWS [\#34](https://github.com/compozed/ops_manager_cli/pull/34) ([geofffranks](https://github.com/geofffranks))
+- Add pending-changes CLI command [\#26](https://github.com/compozed/ops_manager_cli/pull/26) ([RMeharg](https://github.com/RMeharg))
+
+## [v0.5.4](https://github.com/compozed/ops_manager_cli/tree/v0.5.4) (2017-06-27)
+[Full Changelog](https://github.com/compozed/ops_manager_cli/compare/v0.5.3...v0.5.4)
+
+## [v0.5.3](https://github.com/compozed/ops_manager_cli/tree/v0.5.3) (2017-06-27)
+[Full Changelog](https://github.com/compozed/ops_manager_cli/compare/v0.5.2...v0.5.3)
+
+## [v0.5.2](https://github.com/compozed/ops_manager_cli/tree/v0.5.2) (2017-06-27)
+[Full Changelog](https://github.com/compozed/ops_manager_cli/compare/v0.5.1...v0.5.2)
+
+**Closed issues:**
+
+- CLI should check that UAA is available after Ops Manager upgrades [\#29](https://github.com/compozed/ops_manager_cli/issues/29)
+- When upgrading opsman the token does not reset [\#27](https://github.com/compozed/ops_manager_cli/issues/27)
+- Support refresh tokens for re-authentication with UAA [\#24](https://github.com/compozed/ops_manager_cli/issues/24)
+- Allow toggling ops\_manager.log [\#21](https://github.com/compozed/ops_manager_cli/issues/21)
+
 ## [v0.5.1](https://github.com/compozed/ops_manager_cli/tree/v0.5.1) (2017-01-25)
 [Full Changelog](https://github.com/compozed/ops_manager_cli/compare/v0.5.0...v0.5.1)
 
