@@ -10,12 +10,13 @@ describe OpsManager::Api::Opsman do
   let(:filepath) { 'example-product-1.6.1.pivotal' }
   let(:parsed_response){ JSON.parse(response.body) }
   let(:token_issuer){ double }
-  let(:uaa_token){ double(info: {'access_token' => "UAA_ACCESS_TOKEN" }) }
+  let(:token){ double(info: {'access_token' => "UAA_ACCESS_TOKEN" }) }
+  let(:other_token){ double(info: {'access_token' => "OTHER_UAA_ACCESS_TOKEN" }) }
 
   before do
     allow(token_issuer).to receive(:owner_password_grant)
       .with(username, password, 'opsman.admin')
-      .and_return(uaa_token)
+      .and_return(token, other_token)
     allow(CF::UAA::TokenIssuer).to receive(:new)
       .with("https://#{target}/uaa", 'opsman', nil, skip_ssl_validation: true)
       .and_return(token_issuer)
@@ -25,25 +26,61 @@ describe OpsManager::Api::Opsman do
     OpsManager.set_conf(:password, ENV['PASSWORD'] || password)
   end
 
-  describe '#upload_product' do
-    subject(:upload_product){ opsman.upload_product(product_filepath) }
-    let(:product_filepath){ 'example-product.pivotal' }
+  describe "#upload_product" do
+    subject(:upload_product){ opsman.upload_product("tile.pivotal") }
 
-    it 'performs the correct curl' do
-      expect(opsman).to receive(:`).with("curl -s -k \"https://#{target}/api/v0/available_products\" -F 'product[file]=@#{product_filepath}' -X POST -H 'Authorization: Bearer UAA_ACCESS_TOKEN'").and_return('{}')
-      upload_product
+    let(:response_body){ '{}' }
+    let(:response){ upload_product }
+    let(:status_code){ 200 }
+    let(:uri){ "#{base_uri}/api/v0/available_products" }
+
+    before do
+      stub_request(:post, uri).to_return(status: status_code, body: response_body)
     end
 
-    describe 'when upload product errors' do
-      let(:body){ '{"error":"something went wrong"}' }
+    it "should run successfully" do
+      expect(response.code).to eq("200")
+    end
 
-      before { allow(opsman).to receive(:`).and_return(body) }
+    it "should include products in its body" do
+      expect(parsed_response).to eq({})
+    end
 
-      it 'should raise an exception' do
+    describe "when product is nil" do
+      it "should skip" do
+        expect(opsman).not_to receive(:puts).with(/====> Uploading product.../)
+        opsman.upload_product(nil)
+      end
+    end
+
+    describe "when fails to upload product" do
+      let(:status_code){ 400 }
+      let(:response_body){ '{"error": "someting failed" }' }
+
+      it 'should raise OpsManager::ProductUploadError' do
         expect{ upload_product }.to raise_error{ OpsManager::ProductUploadError }
       end
     end
   end
+ # describe '#upload_product' do
+ #   subject(:upload_product){ opsman.upload_product(product_filepath) }
+ #   let(:product_filepath){ 'example-product.pivotal' }
+
+ #   it 'performs the correct curl' do
+ #     expect(opsman).to receive(:`).with("curl -s -k \"https://#{target}/api/v0/available_products\" -F 'product[file]=@#{product_filepath}' -X POST -H 'Authorization: Bearer UAA_ACCESS_TOKEN'").and_return('{}')
+ #     upload_product
+ #   end
+
+ #   describe 'when upload product errors' do
+ #     let(:body){ '{"error":"something went wrong"}' }
+
+ #     before { allow(opsman).to receive(:`).and_return(body) }
+
+ #     it 'should raise an exception' do
+ #       expect{ upload_product }.to raise_error{ OpsManager::ProductUploadError }
+ #     end
+ #   end
+ # end
 
   describe '#upload_installation_assets' do
     before do
@@ -93,6 +130,19 @@ describe OpsManager::Api::Opsman do
     end
   end
 
+  describe 'get_pending_changes' do
+    let(:uri){ "https://#{target}/api/v0/staged/pending_changes" }
+    before do
+      stub_request(:get, uri).
+        to_return(:status => 200, :body => '{}')
+    end
+
+    it 'should get pending changes successfully' do
+      opsman.get_pending_changes
+      expect(WebMock).to have_requested(:get, uri)
+        .with(:headers => {'Authorization'=>'Bearer UAA_ACCESS_TOKEN'})
+    end
+  end
 
   describe 'get_installation_settings' do
     let(:uri){ "https://#{target}/api/installation_settings" }
@@ -305,7 +355,11 @@ describe OpsManager::Api::Opsman do
     end
 
     [ Net::OpenTimeout, Errno::ETIMEDOUT ,
-      Net::HTTPFatalError.new( '', '' ), Errno::EHOSTUNREACH, CF::UAA::BadTarget, SocketError ].each do |error|
+      HTTPClient::ConnectTimeoutError,
+      Net::HTTPFatalError.new( '', '' ),
+      Errno::EHOSTUNREACH,
+      CF::UAA::BadTarget,
+      SocketError ].each do |error|
       describe "when there is no ops manager and request errors: #{error}" do
 
         it "should be nil" do
@@ -494,6 +548,83 @@ describe OpsManager::Api::Opsman do
 
       expect(WebMock).to have_requested(:get, uri)
         .with(:headers => {'Authorization'=>'Bearer UAA_ACCESS_TOKEN'})
+    end
+  end
+
+  describe '#reset_token' do
+    it 'should reset the token' do
+      expect do
+        opsman.reset_access_token
+      end.to change{ opsman.access_token }.from("UAA_ACCESS_TOKEN").to("OTHER_UAA_ACCESS_TOKEN")
+    end
+  end
+
+  describe '#get_ensure_availablity' do
+    let(:uri){ "https://#{target}/login/ensure_availability" }
+
+    it 'should perform a get on /login/ensure_availability' do
+      stub_request(:get, uri)
+
+      opsman.get_ensure_availability
+
+      expect(WebMock).to have_requested(:get, uri)
+    end
+  end
+
+  describe "#pending_changes" do
+    subject(:pending_changes){ opsman.pending_changes }
+
+    let(:response_body){ '{"product_changes":[{"guid":"product-1","action":"update","errands":[]}]}' }
+    let(:response){ pending_changes }
+    let(:status_code){ 200 }
+    let(:uri){ "#{base_uri}/api/v0/staged/pending_changes" }
+
+    before do
+      stub_request(:get, uri).to_return(status: status_code, body: response_body)
+    end
+
+    it "should run successfully" do
+      expect(response.code).to eq("200")
+    end
+
+    it "should include product changes in its body" do
+      expected_value = JSON.parse('{"product_changes":[{"guid":"product-1","action":"update","errands":[]}]}')
+      expect(parsed_response).to eq(expected_value)
+    end
+  end
+
+  describe '#wait_for_https_alive' do
+    before do
+      stub_request(:get, "#{base_uri}/").to_return(:status => 200, :body => "", :headers => {})
+    end
+
+    it 'returns an http response on success' do
+      response = opsman.wait_for_https_alive(1)
+      expect(response).to be_a Net::HTTPOK
+      expect(response.code.to_i).to equal(200)
+    end
+
+    it 'times out after <limit> and returns nil' do
+      allow(opsman).to receive(:get).and_raise(Errno::ECONNREFUSED)
+      response = opsman.wait_for_https_alive(2)
+      expect(response).to be_a Net::HTTPInternalServerError
+      expect(opsman.instance_eval { @retry_counter }).to equal(2)
+    end
+
+    it 'retries and returns success in the middle' do
+      raise_initial = true
+      allow(opsman).to receive(:get) do
+        if raise_initial
+          raise_initial = false
+          raise Errno::ECONNREFUSED.new()
+        else
+          Net::HTTPOK.new(1.0, 200, "OK")
+        end
+      end
+      response = opsman.wait_for_https_alive(2)
+      expect(response).to be_a Net::HTTPOK
+      expect(response.code.to_i).to equal(200)
+      expect(opsman.instance_eval { @retry_counter }).to equal(1)
     end
   end
 end

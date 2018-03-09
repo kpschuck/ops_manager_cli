@@ -9,6 +9,7 @@ describe OpsManager::ApplianceDeployment do
   let(:desired_version){ OpsManager::Semver.new('1.5.5') }
   let(:pivnet_api){ object_double(OpsManager::Api::Pivnet.new) }
   let(:opsman_api){ object_double(OpsManager::Api::Opsman.new) }
+  let(:appliance){ object_double(OpsManager::Appliance::Base.new(config_file))}
   let(:username){ 'foo' }
   let(:password){ 'foo' }
   let(:pivnet_token){ 'asd123' }
@@ -34,6 +35,8 @@ describe OpsManager::ApplianceDeployment do
 
     allow(OpsManager::Api::Pivnet).to receive(:new).and_return(pivnet_api)
     allow(OpsManager::Api::Opsman).to receive(:new).and_return(opsman_api)
+    allow(OpsManager::Appliance::Vsphere).to receive(:new).and_return(appliance)
+    allow(OpsManager::Appliance::AWS).to receive(:new).and_return(appliance)
     allow(OpsManager::InstallationRunner).to receive(:trigger!).and_return(installation)
 
     allow(appliance_deployment).to receive(:current_version).and_return(current_version)
@@ -48,20 +51,46 @@ describe OpsManager::ApplianceDeployment do
     end
   end
 
-  %w{ stop_current_vm deploy_vm }.each do |m|
-    describe m do
-      it 'should raise not implemented error' do
-        expect{ appliance_deployment.send(m) }.to raise_error(NotImplementedError)
-      end
+  describe '#deploy' do
+    subject(:deploy){ appliance_deployment.deploy }
+
+    it 'Should perform in the right order' do
+      expect(appliance).to receive(:deploy_vm).ordered
+      expect(opsman_api).to receive(:wait_for_https_alive).ordered
+
+      deploy
     end
   end
 
-  describe '#deploy' do
+  describe '#stop_current_vm' do
+    subject(:stop_current_vm){ appliance.stop_current_vm('ops-manager-1.5.5') }
+
     it 'Should perform in the right order' do
-      %i( deploy_vm).each do |method|
-        expect(appliance_deployment).to receive(method).ordered
+      expect(appliance).to receive(:stop_current_vm).ordered
+      stop_current_vm
+    end
+  end
+
+  describe '#appliance' do
+    before do
+      allow(OpsManager::Appliance::Vsphere).to receive(:new).and_call_original
+      allow(OpsManager::Appliance::AWS).to receive(:new).and_call_original
+    end
+
+    describe 'when provider is appliance' do
+      before{ config[:provider] = 'vsphere' }
+
+      it 'Should create an OpsManager::Appliance::Vsphere' do
+        expect(appliance_deployment.appliance).to be_kind_of(OpsManager::Appliance::Vsphere)
       end
-      appliance_deployment.deploy
+
+    end
+    describe 'when provider is aws' do
+      before{ config[:provider] = 'aws' }
+
+      it 'Should create an OpsManager::Appliance::AWS' do
+        expect(appliance_deployment.appliance).to be_kind_of(OpsManager::Appliance::AWS)
+      end
     end
   end
 
@@ -70,23 +99,30 @@ describe OpsManager::ApplianceDeployment do
     before do
       %i( get_installation_assets get_installation_settings
          get_diagnostic_report ).each do |m|
-        allow(opsman_api).to receive(m)
+           allow(opsman_api).to receive(m)
       end
 
-      %i( download_current_stemcells
-         stop_current_vm deploy upload_installation_assets
-         provision_stemcells).each do |m|
-           allow(appliance_deployment).to receive(m)
-         end
+      %i( download_current_stemcells).each do |m|
+        allow(appliance_deployment).to receive(m)
+      end
+
+      allow(appliance).to receive(:stop_current_vm)
+
+      %i( deploy upload_installation_assets
+        wait_for_uaa provision_stemcells).each do |m|
+          allow(appliance_deployment).to receive(m)
+      end
     end
 
     it 'Should perform in the right order' do
-      %i( get_installation_assets download_current_stemcells
-         stop_current_vm deploy upload_installation_assets
-         provision_stemcells).each do |m|
-           expect(appliance_deployment).to receive(m).ordered
-         end
-         upgrade
+      %i( get_installation_assets download_current_stemcells).each do |m|
+        expect(appliance_deployment).to receive(m).ordered
+      end
+       expect(appliance).to receive(:stop_current_vm)
+      %i( deploy upload_installation_assets wait_for_uaa provision_stemcells).each do |m|
+        expect(appliance_deployment).to receive(m).ordered
+      end
+      upgrade
     end
 
     it 'should trigger installation' do
@@ -105,11 +141,15 @@ describe OpsManager::ApplianceDeployment do
 
     let(:version){ "3062" }
     let(:other_version){ "3063" }
+    let(:windows_version){ "1200" }
     let(:installation_settings) do
       {
         "products" => [
-          { "stemcell": { "version" => version       } },
-          { "stemcell": { "version" => other_version } },
+          { "stemcell": { "version" => version,         "os" => "ubuntu-trusty"} },
+          { "stemcell": { "version" => other_version,   "os" => "ubuntu-trusty"} },
+          { "stemcell": { "version" => version,         "os" => "ubuntu-trusty"} },
+          { "stemcell": { "version" => version,         "os" => "ubuntu-trusty"} },
+          { "stemcell": { "version" => windows_version, "os" => "windowsR2012"} },
         ]
       }
     end
@@ -121,14 +161,18 @@ describe OpsManager::ApplianceDeployment do
     end
 
     describe 'when installation_settings are present' do
-      it 'should return list of current stemcells' do
-        expect(list_current_stemcells).to eq( [ version, other_version ])
+      it 'should return uniqued list of current stemcells, with version and their corresponding product' do
+        expect(list_current_stemcells).to eq([
+          {version: version,         product: "stemcells"},
+          {version: other_version,   product: "stemcells"},
+          {version: windows_version, product: "stemcells-windows-server" },
+        ])
       end
     end
   end
 
   describe '#find_stemcell_release' do
-    subject(:find_stemcell_release){ appliance_deployment.find_stemcell_release(stemcell_version) }
+    subject(:find_stemcell_release){ appliance_deployment.find_stemcell_release(stemcell_version, "arbitrary-stemcells") }
     let(:product_releases_response) do
       {
         'releases' => [
@@ -142,7 +186,7 @@ describe OpsManager::ApplianceDeployment do
 
     before do
       allow(appliance_deployment).to receive(:get_product_releases)
-        .with('stemcells')
+        .with('arbitrary-stemcells')
         .and_return(double(status_code: 200, body: product_releases_response.to_json))
     end
 
@@ -164,7 +208,7 @@ describe OpsManager::ApplianceDeployment do
   end
 
   describe '#find_stemcell_file' do
-    subject(:find_stemcell_file){ appliance_deployment.find_stemcell_file(1, /vsphere/) }
+    subject(:find_stemcell_file){ appliance_deployment.find_stemcell_file(1, /vsphere/, "arbitrary-stemcell") }
 
     let(:stemcell_version){ "3062" }
     let(:product_file_id){ 1 }
@@ -186,7 +230,7 @@ describe OpsManager::ApplianceDeployment do
 
     before do
       allow(appliance_deployment).to receive(:get_product_release_files)
-        .with('stemcells', 1)
+        .with('arbitrary-stemcell', 1)
         .and_return(double(status_code: 200, body: product_files_response.to_json))
     end
 
@@ -204,24 +248,32 @@ describe OpsManager::ApplianceDeployment do
 
   describe '#download_current_stemcells' do
     subject(:download_current_stemcells){ appliance_deployment.download_current_stemcells }
-    let(:current_stemcells){ ["3062.0" , "3063.0" ] }
+    let(:current_stemcells){ [
+      {version: "3062.0", product: "stemcells"},
+      {version: "3063.0", product: "stemcells"},
+      {version: "1200.12", product: "stemcells-windows-server"},
+    ]}
     let(:release_id){ rand(1000..9999) }
     let(:file_id)   { rand(1000..9999) }
     let(:stemcell_filepath){ "bosh-stemcell-3062.0-vcloud-esxi-ubuntu-trusty-go_agent.tgz" }
+    let(:windows_filepath){ "light-bosh-stemcell-1200.12-vsphere-xen-hvm-windows2012R2-go_agent.tgz" }
 
     before do
       allow(appliance_deployment).tap do |ad|
         ad.to receive(:list_current_stemcells).and_return(current_stemcells)
         ad.to receive(:find_stemcell_release).and_return(release_id)
-        ad.to receive(:find_stemcell_file).with(release_id, /vsphere/).and_return([file_id, stemcell_filepath])
+        ad.to receive(:find_stemcell_file).with(release_id, /vsphere/, "stemcells").and_return([file_id, stemcell_filepath])
+        ad.to receive(:find_stemcell_file).with(release_id, /vsphere/, "stemcells-windows-server").and_return([file_id, windows_filepath])
         ad.to receive(:accept_product_release_eula)
         ad.to receive(:download_product_release_file)
       end
     end
 
-    it 'should download all stemcell' do
+    it 'should download all stemcells from the appropriate products' do
       expect(appliance_deployment).to receive(:download_product_release_file)
         .with('stemcells', release_id, file_id, write_to: "/tmp/current_stemcells/#{stemcell_filepath}" ).twice
+      expect(appliance_deployment).to receive(:download_product_release_file)
+        .with('stemcells-windows-server', release_id, file_id, write_to: "/tmp/current_stemcells/#{windows_filepath}" )
       download_current_stemcells
     end
 
@@ -239,7 +291,8 @@ describe OpsManager::ApplianceDeployment do
         .and_return([
           '/tmp/current_stemcells/stemcell-1.tgz',
           '/tmp/current_stemcells/stemcell-2.tgz',
-        ])
+      ])
+      allow(opsman_api).to receive(:reset_access_token)
     end
 
     it 'should upload all the stemcells in /tmp/current_stemcells' do
@@ -248,6 +301,50 @@ describe OpsManager::ApplianceDeployment do
       expect(opsman_api).to receive(:import_stemcell)
         .with('/tmp/current_stemcells/stemcell-2.tgz')
       provision_stemcells
+    end
+
+    it 'should reset the opsman token before running imports' do
+      expect(opsman_api).to receive(:reset_access_token).ordered
+      expect(opsman_api).to receive(:import_stemcell).ordered.twice
+      provision_stemcells
+    end
+  end
+
+  describe '#wait_for_uaa' do
+    subject(:wait_for_uaa){ appliance_deployment.wait_for_uaa }
+
+    before do
+      allow(appliance_deployment).to receive(:sleep)
+    end
+
+
+    describe 'when uaa is available' do
+      before do
+        allow(opsman_api).to receive(:get_ensure_availability)
+          .and_return(double( code:'302', body:'You are being /auth/cloudfoundry redirected'))
+      end
+
+      it 'should exit successfully' do
+        expect(opsman_api).to receive(:get_ensure_availability)
+        wait_for_uaa
+      end
+    end
+
+    describe 'when uaa is not available yet' do
+      before do
+        allow(opsman_api).to receive(:get_ensure_availability)
+          .and_return(
+            double( code:'503', body:'503 Bad Gateway'),
+            double( code:'302', body:'Ops Manager Setup'),
+            double( code:'200', body:'Waiting for authentication system to start...'),
+            double( code:'302', body:'You are being /auth/cloudfoundry redirected')
+        )
+      end
+
+      it 'should wait until uaa is ready' do
+        expect(opsman_api).to receive(:get_ensure_availability).exactly(4).times
+        wait_for_uaa
+      end
     end
   end
 
@@ -316,7 +413,12 @@ describe OpsManager::ApplianceDeployment do
 
     describe 'when ops-manager has been deployed and current and desired version match' do
       let(:desired_version){ current_version }
+        let(:pending_changes_response){ { "product_changes": [] }}
 
+      before do
+        allow(appliance_deployment).to receive(:get_pending_changes)
+          .and_return(double(status_code: 200, body: pending_changes_response.to_json))
+      end
       it 'does not performs a deployment' do
         expect(appliance_deployment).to_not receive(:deploy)
         expect do
@@ -329,6 +431,17 @@ describe OpsManager::ApplianceDeployment do
         expect do
           run
         end.to output(/OpsManager at #{target} version is already #{current_version.to_s}. Skiping .../).to_stdout
+      end
+
+      describe 'when there are pending changes' do
+        let(:pending_changes_response){ {"product_changes": [{ "guid": "cf" }]} }
+
+        it 'should apply changes' do
+          expect(OpsManager::InstallationRunner).to receive(:trigger!)
+          expect do
+            run
+          end.to output(/OpsManager at #{target} version has pending changes. Applying changes.../).to_stdout
+        end
       end
     end
 
