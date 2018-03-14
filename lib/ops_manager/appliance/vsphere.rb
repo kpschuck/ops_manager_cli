@@ -43,5 +43,3 @@ class OpsManager
     end
   end
 end
-
-
