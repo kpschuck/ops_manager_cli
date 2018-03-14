@@ -26,8 +26,6 @@ class OpsManager::ApplianceDeployment
     OpsManager.set_conf(:password, config[:password])
     OpsManager.set_conf(:pivnet_token, config[:pivnet_token])
 
-    self.extend(OpsManager::Deployments::Vsphere)
-
     if config.has_key?('hostname') then
       OpsManager.set_conf(:target, config.hostname)
     end
